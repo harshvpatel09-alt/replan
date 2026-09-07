@@ -190,45 +190,80 @@ const Importer = (() => {
      Everything found is shown for review before anything is created. */
   const NOISE = /^(?:classwork|assignments?|upcoming|to ?do|grades?|home|stream|people|all|view all|no due date|week of|today|tomorrow|assigned|turned in|missing|done|completed|graded|filter|sort)\b/i;
 
+  /* A class name is not an assignment name. Google Classroom's to-do list runs
+     title / class / due, while the classwork view runs class-header / title /
+     posted / due. Reading "the line above the date" therefore picked up the
+     class every time, so every imported assignment was called "Chemistry -
+     Period 3". These markers are what tells the two apart. */
+  const CLASS_HINT = /\b(?:period|hour|block|section|per\.?|sem\.?|semester)\s*\d|\bp\d\b|\b\d(?:st|nd|rd|th)\s+(?:period|hour|block)\b/i;
+  const POSTED = /^(?:posted|assigned|due date|opens?|available)\b/i;
+
   function parseCoursework(text, todayISO){
-    const lines = text.split('\n').map(s => s.replace(/\s+/g,' ').trim()).filter(Boolean);
+    const lines = text.split('\n').map(s => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
     const rows = [];
-    let currentClass = '';
+    let sectionClass = '';
+
+    const hasDue = l => /\bdue\b/i.test(l) || /\b\d{1,2}\/\d{1,2}\b/.test(l);
+    const classLike = l => CLASS_HINT.test(l) && l.length < 60;
 
     lines.forEach((line, i) => {
-      // a bare short line with no date often names the class in Classroom views
-      const hasDate = /\bdue\b|\d{1,2}\/\d{1,2}|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)/i.test(line);
-      if (!hasDate && line.length < 60 && !NOISE.test(line) && /[A-Za-z]/.test(line)
-          && /(period|hour|block|\bp\d\b|honors|ap |cp |grade|\d{3,})/i.test(line)) {
-        currentClass = line.replace(/[•·|]+/g,' ').trim();
+      if (!hasDue(line)) {
+        if (classLike(line) && !NOISE.test(line)) sectionClass = line.replace(/[•·|]+/g, ' ').trim();
         return;
       }
-      if (!/\bdue\b/i.test(line) && !/\d{1,2}\/\d{1,2}/.test(line)) return;
       if (NOISE.test(line) && !/\bdue\b/i.test(line)) return;
 
       const due = parseDate(line, todayISO);
-      if (!due) return;
+      if (!due) return;                              // never guess a date
 
-      // strip the date clause to leave the assignment title
+      // the due line sometimes carries the title too: "Lab Report 3 — Due Sep 18"
       let title = line
         .replace(/\bdue\b[^,|•·]*/i, ' ')
         .replace(/\b\d{1,2}:\d{2}\s*(?:am|pm)?\b/ig, ' ')
-        .replace(/[-–—•·|]{1,}/g, ' ')
         .replace(/\b\d+\s*\/\s*\d+\s*pts?\b/ig, ' ')
         .replace(/\b\d+\s*(?:pts|points)\b/ig, ' ')
+        .replace(/[-–—•·|]{1,}/g, ' ')
         .replace(/\s+/g, ' ').trim();
+      let cls = '';
 
-      if (title.length < 3) {                       // title probably on the line above
-        const prev = (lines[i-1] || '').trim();
-        if (prev && !NOISE.test(prev) && prev.length > 3 && prev.length < 90) title = prev;
+      // otherwise walk back: the nearest class-like line names the class, the
+      // nearest ordinary line names the assignment
+      if (title.length < 3 || classLike(title)) {
+        title = '';
+        for (let k = i - 1; k >= 0 && k >= i - 4; k--) {
+          const prev = lines[k];
+          if (!prev || hasDue(prev) || NOISE.test(prev) || POSTED.test(prev)) continue;
+          if (classLike(prev)) { if (!cls) cls = prev; continue; }
+          title = prev; break;
+        }
       }
-      if (title.length < 3) return;
-      rows.push({ title: title.slice(0,80), className: currentClass, due });
+      if (!cls) cls = sectionClass;
+      title = title.replace(/[•·|]+/g, ' ').replace(/\s+/g, ' ').trim();
+      if (title.length < 3 || classLike(title)) return;
+
+      rows.push({ title: title.slice(0, 80), className: cls, due });
     });
 
-    // de-duplicate on title + date
     const seen = new Set();
-    return rows.filter(r => { const k = (r.title+r.due).toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+    return rows.filter(r => {
+      const k = (r.title + r.due).toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }
+
+  /* "Chemistry - Period 3" and a class the student already called "Chemistry"
+     are the same class. Without this every import spawned a duplicate. */
+  function classKey(name){
+    return String(name || '')
+      .toLowerCase()
+      .replace(/\b(?:period|hour|block|section|per\.?|sem\.?|semester)\s*\d+\b/g, ' ')
+      .replace(/\b\d(?:st|nd|rd|th)\s+(?:period|hour|block)\b/g, ' ')
+      .replace(/\bp\d\b/g, ' ')
+      .replace(/\b(?:honors|honours|ap|cp|advanced placement|college prep|regular|academic)\b/g, ' ')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
   }
 
   /* --------------------------------------------------------------- questions */
@@ -278,7 +313,7 @@ const Importer = (() => {
     return { kind:'notes', source:'document text', text };
   }
 
-  return { PROVIDERS, byId, scan, detect, parseDate, parseICS, parseCoursework, parseQuestions };
+  return { PROVIDERS, byId, scan, detect, parseDate, parseICS, parseCoursework, parseQuestions, classKey };
 })();
 
 if (typeof window !== 'undefined') window.Importer = Importer;

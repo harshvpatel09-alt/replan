@@ -357,48 +357,78 @@ function allWork(){
   });
   return out.sort((a,b) => a.due.localeCompare(b.due));
 }
+function liveWork(id){ return state.work.find(w => w.id === id); }
+
 function doneMinutes(workId){
   if (!state.plan) return 0;
   let t = 0;
   Object.values(state.plan.days).forEach(bs => bs.forEach(b => { if (b.wid === workId && b.done) t += b.min; }));
   return t;
 }
-function remainingOf(w){ return Math.max(0, (w.min||0) - doneMinutes(w.id)); }
+function remainingOf(w){ return w.done ? 0 : Math.max(0, (w.min||0) - doneMinutes(w.id)); }
+function isFinished(w){ return !!w.done || (w.min > 0 && doneMinutes(w.id) >= w.min); }
 
 /* =========================================================================
    THE SCHEDULER
    Spreads each assignment's remaining minutes across the days available
    before its deadline, earliest deadline first, respecting daily capacity.
-   Regenerating IS the redistribution: anything not completed simply gets
-   re-spread across whatever days are left.
+
+   Today is pinned. Re-planning the current day every time a block was ticked
+   meant the rest of the day rearranged itself underneath the student: blocks
+   duplicated, moved, and the day grew longer the more work they finished.
+   Once a day has started its list is fixed, and only future days absorb
+   changes. "Rebuild today too" is the deliberate escape hatch.
    ========================================================================= */
-function buildPlan(){
+function buildPlan({ replanToday = false } = {}){
   const today = todayISO();
   const prev = state.plan;
   const days = {};
 
-  // history: past days keep only what was actually completed
+  // history: past days keep only what was completed, for work that still exists
   if (prev) Object.keys(prev.days).forEach(d => {
-    if (d < today) { const done = prev.days[d].filter(b => b.done); if (done.length) days[d] = done; }
+    if (d >= today) return;
+    const keep = prev.days[d].filter(b => b.done && liveWork(b.wid));
+    if (keep.length) days[d] = keep;
   });
-  const todayDone = prev ? (prev.days[today] || []).filter(b => b.done) : [];
 
-  const spentToday = todayDone.reduce((t,b) => t + b.min, 0);
+  // today's committed list
+  let todayKept = [];
+  if (prev && prev.days[today]) {
+    todayKept = prev.days[today].filter(b => {
+      const w = liveWork(b.wid);
+      if (!w) return false;              // the assignment was deleted
+      if (b.done) return true;           // finished work is history, always kept
+      return !w.done && !replanToday;    // unfinished blocks stay put unless told otherwise
+    });
+  }
+
   const doneBy = {};
-  Object.values(days).flat().concat(todayDone).forEach(b => { doneBy[b.wid] = (doneBy[b.wid]||0) + b.min; });
+  Object.values(days).flat().forEach(b => { doneBy[b.wid] = (doneBy[b.wid]||0) + b.min; });
+  todayKept.forEach(b => { if (b.done) doneBy[b.wid] = (doneBy[b.wid]||0) + b.min; });
+
+  // minutes already held by today's pinned blocks must not be scheduled twice
+  const pinnedBy = {};
+  todayKept.forEach(b => { if (!b.done) pinnedBy[b.wid] = (pinnedBy[b.wid]||0) + b.min; });
 
   const open = state.work
-    .filter(w => w.min > 0)
-    .map(w => ({ ...w, need: Math.max(0, w.min - (doneBy[w.id]||0)) }))
+    .filter(w => w.min > 0 && !w.done)
+    .map(w => ({ ...w, need: Math.max(0, w.min - (doneBy[w.id]||0) - (pinnedBy[w.id]||0)) }))
     .filter(w => w.need > 0)
     .sort((a,b) => a.due.localeCompare(b.due) || b.min - a.min);
 
+  const usedToday = todayKept.reduce((t,b) => t + b.min, 0);
+  // once today has a committed list, work already placed there keeps exactly the
+  // slot it was given; re-cutting it into the day's leftover capacity was what
+  // made the day grow every time a block was ticked off
+  const todayPinned = !replanToday && !!(prev && prev.days[today]);
+  // any task that already had a slot today keeps just that slot — including one
+  // that has since been ticked off, which otherwise freed capacity for itself
+  const placedToday = new Set(todayKept.map(b => b.wid));
   const horizon = open.reduce((m,w) => w.due > m ? w.due : m, today);
   const cap = {};
   const dayList = [];
   for (let d = today; d <= horizon; d = addDays(d,1)) {
-    cap[d] = state.hours[dowOf(d)] - (d === today ? spentToday : 0);
-    if (cap[d] < 0) cap[d] = 0;
+    cap[d] = Math.max(0, state.hours[dowOf(d)] - (d === today ? usedToday : 0));
     dayList.push(d);
   }
 
@@ -416,7 +446,11 @@ function buildPlan(){
     const isExam = w.type === 'Test' || w.type === 'Quiz' || w.type === 'Final exam';
     let last = isExam ? addDays(w.due, -1) : w.due;
     if (last < today) last = today;
-    const window = dayList.filter(d => d <= last && cap[d] > 0);
+    // exam revision is pointless eight months early, so work may declare the
+    // date it should start ramping up; everything else starts today
+    const from = w.startsOn && w.startsOn > today ? w.startsOn : today;
+    const window = dayList.filter(d => d >= from && d <= last && cap[d] > 0
+      && !(d === today && todayPinned && placedToday.has(w.id)));   // already has today's slot
 
     if (!window.length) { atRisk.push({ w, short: w.need, reason: w.due < today ? 'overdue' : 'notime' }); return; }
 
@@ -437,14 +471,15 @@ function buildPlan(){
 
   const merged = Object.assign({}, days);
   dayList.forEach(d => {
-    const carried = d === today ? todayDone : [];
+    const carried = d === today ? todayKept : [];
     const made = fresh[d] || [];
     if (carried.length || made.length) merged[d] = carried.concat(made);
   });
+  if (todayKept.length && !merged[today]) merged[today] = todayKept;
   return { madeOn: today, days: merged, atRisk };
 }
 
-function rebuild(){ state.plan = buildPlan(); save(); }
+function rebuild(opts){ state.plan = buildPlan(opts); save(); }
 
 /* called once per day: anything left undone in the past is reported, then re-spread */
 function rollForward(){
@@ -470,9 +505,28 @@ function toggleBlocks(day, ids){
   if (!set.length) return;
   const next = !set.every(b => b.done);
   set.forEach(b => b.done = next);
-  const w = state.work.find(x => x.id === set[0].wid);
+  const w = liveWork(set[0].wid);
   if (next && w) say(doneMinutes(w.id) >= w.min ? `${w.title} finished` : `${w.title} block done`);
   rebuild(); render();
+}
+
+/* Finishing early is normal, and ticking one day's block only ever recorded
+   that day's minutes. This marks the whole assignment done and clears every
+   block still scheduled for it, giving those hours back to everything else. */
+function completeWork(id){
+  const w = liveWork(id);
+  if (!w) return;
+  w.done = !w.done;
+  let cleared = 0;
+  if (w.done && state.plan) Object.values(state.plan.days).forEach(bs => {
+    for (let i = bs.length - 1; i >= 0; i--) {
+      if (bs[i].wid === id && !bs[i].done) { cleared += bs[i].min; bs.splice(i, 1); }
+    }
+  });
+  rebuild(); render();
+  say(w.done
+    ? `${w.title} finished${cleared ? ` — ${fmtMin(cleared)} of scheduled time freed up` : ''}`
+    : `${w.title} reopened`);
 }
 
 /* =========================================================================
@@ -607,8 +661,8 @@ function viewToday(){
 function viewSchedule(){
   const today = todayISO();
   const plan = state.plan;
-  let html = head('My schedule', 'Every study block Replan has planned, from today forward. Miss one and the work moves — it is never deleted.',
-    btn('Rebuild now','data-rebuild',''));
+  let html = head('My schedule', 'Every study block Replan has planned, from today forward. Miss one and the work moves \u2014 it is never deleted. Today\u2019s list stays fixed once the day starts, so ticking things off never rearranges the rest of your day; use Rebuild today too if you want it recalculated from scratch.',
+    btn('Rebuild today too','data-rebuild',''));
   if (!plan || !Object.keys(plan.days).some(d => d >= today)) return html + empty('Nothing scheduled yet. Add an assignment with a due date and an estimate.','Add work','data-add-work');
 
   const days = Object.keys(plan.days).filter(d => d >= today).sort();
@@ -673,14 +727,15 @@ function viewWork(){
             <span class="block truncate text-[15px] font-bold">${esc(w.title)}</span>
             <span class="block truncate text-[12.5px] text-ink-mute">${c?esc(className(c))+' · ':''}${esc(w.type)}${w.session?' · '+esc(w.session):''}</span>
           </span>
-          ${dueChip(w.due)}
+          ${w.done ? `<span class="rounded-md bg-grass-100 px-2 py-0.5 text-[11.5px] font-bold text-grass-700">Finished</span>` : dueChip(w.due)}
           ${w.readonly ? `<span class="rounded-md bg-mist-deep px-2 py-0.5 text-[11.5px] font-bold text-ink-soft">From AP database</span>`
             : `<span class="shrink-0 text-[13px] font-bold tabular-nums text-ink-soft">${fmtMin(w.min)}</span>`}
         </div>
         ${!w.readonly && w.min ? `<div class="mt-3 flex items-center gap-3">
             <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-mist-deep"><div class="h-full rounded-full bg-grass-500" style="width:${pct}%"></div></div>
             <span class="text-[12px] font-semibold tabular-nums text-ink-mute">${pct}%</span></div>` : ''}
-        ${!w.readonly ? `<div class="mt-3 flex gap-2 border-t border-mist-line pt-3">
+        ${!w.readonly ? `<div class="mt-3 flex flex-wrap gap-2 border-t border-mist-line pt-3">
+            ${btn(w.done ? 'Reopen' : 'Mark finished', `data-finish-work="${esc(w.id)}"`, w.done ? '' : 'primary')}
             ${btn('Edit',`data-edit-work="${esc(w.id)}"`,'')}
             <span class="ml-auto">${btn('Delete',`data-del-work="${esc(w.id)}"`,'danger')}</span></div>` : ''}
       </article>`;
@@ -694,8 +749,10 @@ function viewWork(){
    VIEW — MY CLASSES
    ========================================================================= */
 function viewClasses(){
+  const apWithExam = state.classes.filter(c => { const a = apFor(c); return a && a.examDate; });
+  const revisionPending = apWithExam.filter(c => !state.work.some(w => w.examFor === c.id));
   let html = head('My classes', `${state.classes.length} ${state.classes.length===1?'class':'classes'} this term. AP classes pull their exam date and format from the College Board database automatically.`,
-    btn('Add a class','data-add-class','primary'));
+    `<div class="flex flex-wrap gap-2">${revisionPending.length ? btn(`Schedule revision for ${revisionPending.length} AP exam${revisionPending.length===1?'':'s'}`,'data-all-revision','') : ''}${btn('Add a class','data-add-class','primary')}</div>`);
   if (!state.classes.length) return html + empty('No classes yet.','Add a class','data-add-class');
 
   html += `<div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">`;
@@ -713,6 +770,9 @@ function viewClasses(){
       <p class="mt-2 text-[13px] font-medium text-ink-soft">${load.length} ${load.length===1?'assignment':'assignments'}</p>
       <div class="mt-4 flex gap-2 border-t border-mist-line pt-3.5">
         ${ap ? btn('AP details',`data-ap="${esc(ap.name)}"`,'') : btn('Add work',`data-add-work-for="${esc(c.id)}"`,'')}
+        ${ap && ap.examDate ? (state.work.some(w => w.examFor === c.id)
+          ? `<span class="inline-flex h-11 items-center rounded-xl bg-grass-50 px-3 text-[13px] font-semibold text-grass-700">Revision scheduled</span>`
+          : btn('Schedule revision', `data-revision="${esc(c.id)}"`, '')) : ''}
         <span class="ml-auto">${btn('Remove',`data-del-class="${esc(c.id)}"`,'danger')}</span></div>
     </article>`;
   });
@@ -1132,7 +1192,13 @@ function renderDraft(){
         <label class="flex items-center gap-3 rounded-xl bg-mist px-3.5 py-2.5">
           <input type="checkbox" data-row="${i}" ${r.skip?'':'checked'} class="h-4 w-4 shrink-0 cursor-pointer accent-brand-600">
           <span class="min-w-0 flex-1"><span class="block truncate text-[13.5px] font-semibold">${esc(r.title)}</span>
-            ${r.className?`<span class="block truncate text-[12px] text-ink-mute">${esc(r.className)}</span>`:''}</span>
+            ${r.className ? (() => {
+              const key = Importer.classKey(r.className);
+              const hit = state.classes.find(c => Importer.classKey(c.name) === key || Importer.classKey(className(c)) === key);
+              return `<span class="block truncate text-[12px] text-ink-mute">${esc(r.className)} ${hit
+                ? `&rarr; ${esc(className(hit))}`
+                : '&rarr; new class'}</span>`;
+            })() : ''}</span>
           <span class="shrink-0 text-[12.5px] font-semibold text-ink-soft">${esc(fmtDate(r.due))}</span>
         </label>`).join('')}</div></div>`;
   }
@@ -1469,13 +1535,18 @@ document.addEventListener('click', e => {
   const pe = e.target.closest('[data-p]');
   if (pe && MODULES.practice && Practice.active) { Practice.handle(pe); return; }
 
-  const t = e.target.closest('[data-view],[data-add-class],[data-add-work],[data-add-work-for],[data-edit-work],[data-del-work],[data-del-class],[data-ap],[data-add-ap],[data-del-ap],[data-save-class],[data-save-work],[data-ctab],[data-blocks],[data-close-modal],[data-rebuild],[data-reset-hours],[data-dismiss-roll],[data-open-sidebar],[data-close-sidebar],[data-drill],[data-timed],[data-upload],[data-gen],[data-del-mat],[data-mat-notes],[data-mat-cards],[data-card-flip],[data-card-next],[data-card-prev],[data-track-sat],[data-scan],[data-do-import],[data-import-file],[data-link-prov]');
+  const t = e.target.closest('[data-view],[data-add-class],[data-add-work],[data-add-work-for],[data-edit-work],[data-del-work],[data-del-class],[data-ap],[data-add-ap],[data-del-ap],[data-save-class],[data-save-work],[data-ctab],[data-blocks],[data-close-modal],[data-rebuild],[data-reset-hours],[data-dismiss-roll],[data-open-sidebar],[data-close-sidebar],[data-drill],[data-timed],[data-upload],[data-gen],[data-del-mat],[data-mat-notes],[data-mat-cards],[data-card-flip],[data-card-next],[data-card-prev],[data-track-sat],[data-scan],[data-do-import],[data-import-file],[data-link-prov],[data-finish-work],[data-revision],[data-all-revision]');
   if (!t) return;
   const d = t.dataset;
   if (d.view !== undefined) go(d.view);
   else if (d.addClass !== undefined) { classTab = 'std'; addClassModal(); }
   else if (d.addWork !== undefined) workModal(null);
   else if (d.addWorkFor !== undefined) workModal(null, d.addWorkFor);
+  else if (d.finishWork !== undefined) completeWork(d.finishWork);
+  else if (d.allRevision !== undefined) addAllExamRevision();
+  else if (d.revision !== undefined) {
+    if (addExamRevision(d.revision)) { rebuild(); render(); say('Revision scheduled, starting five weeks before the exam'); go('schedule'); }
+  }
   else if (d.editWork !== undefined) workModal(state.work.find(w=>w.id===d.editWork));
   else if (d.delWork !== undefined) {
     const w = state.work.find(x=>x.id===d.delWork);
@@ -1504,7 +1575,7 @@ document.addEventListener('click', e => {
   else if (d.ctab !== undefined) { classTab = d.ctab; document.getElementById('mBody').innerHTML = classBody();
     document.getElementById('mBody').querySelector('input,select')?.focus(); }
   else if (d.blocks !== undefined) { const [day,ids] = d.blocks.split('|'); toggleBlocks(day, ids.split(',')); }
-  else if (d.rebuild !== undefined) { rebuild(); render(); say('Schedule rebuilt'); }
+  else if (d.rebuild !== undefined) { rebuild({ replanToday:true }); render(); say('Schedule rebuilt, including today'); }
   else if (d.resetHours !== undefined) { state.hours = DEFAULT_HOURS.slice(); rebuild(); render(); say('Study time reset'); }
   else if (d.dismissRoll !== undefined) { state.rollover = null; save(); render(); }
   else if (d.drill !== undefined) launch(d.drill, false);
@@ -1637,8 +1708,11 @@ function commitImport(){
     keep.forEach(r => {
       let cls = null;
       if (r.className) {
-        cls = state.classes.find(c => className(c).toLowerCase() === r.className.toLowerCase()
-                                   || c.name.toLowerCase() === r.className.toLowerCase());
+        // match on the bare subject so "Chemistry - Period 3" attaches to an
+        // existing "Honors Chemistry" instead of creating a second class
+        const key = Importer.classKey(r.className);
+        cls = state.classes.find(c => Importer.classKey(c.name) === key
+                                   || Importer.classKey(className(c)) === key);
         if (!cls) {
           cls = { id:uid(), name:r.className.slice(0,60), level:'Regular', grade:'',
                   color:PALETTE[state.classes.length % PALETTE.length], imported:true };
@@ -1687,12 +1761,39 @@ function commitImport(){
   generateFor(m.id);
 }
 
+const REVISION = { minutes: 600, leadDays: 35 };   // 10 hours, ramping up 5 weeks out
+
+/* An AP exam is a date the student already gave us, so the revision for it can
+   be scheduled without them entering anything. It back-plans from the exam and
+   only starts a few weeks out, rather than trickling 10 hours across 8 months. */
+function addExamRevision(classId){
+  const c = classById(classId);
+  const ap = c && apFor(c);
+  if (!ap || !ap.examDate) { say('That class has no exam date in the database'); return false; }
+  if (state.work.some(w => w.examFor === classId)) return false;
+  state.work.push({ id:uid(), classId, title:`Revise for ${ap.name.replace(/^AP /,'')}`,
+                    type:'Test', due:ap.examDate, min:REVISION.minutes,
+                    startsOn: addDays(ap.examDate, -REVISION.leadDays), examFor:classId });
+  return true;
+}
+
+function addAllExamRevision(){
+  const eligible = state.classes.filter(c => { const a = apFor(c); return a && a.examDate; });
+  if (!eligible.length) { say('No AP classes with an exam date yet'); return; }
+  let n = 0;
+  eligible.forEach(c => { if (addExamRevision(c.id)) n++; });
+  rebuild(); render();
+  say(n ? `Revision added for ${n} AP exam${n===1?'':'s'}, starting five weeks before each` : 'Revision is already scheduled for every AP exam');
+  if (n) go('schedule');
+}
+
 /* Turning a test date into work is what makes the countdown useful: the
    scheduler then back-plans revision across the free hours before it. */
 function trackSatDate(iso){
   if (state.work.some(w => w.satDate === iso)) { go('schedule'); return; }
   state.work.push({ id:uid(), classId:null, title:`SAT — ${fmtDate(iso)}`, type:'Test',
-                    due:iso, min:600, satDate:iso });
+                    due:iso, min:REVISION.minutes,
+                    startsOn: addDays(iso, -42), satDate:iso });
   rebuild(); render();
   say(`SAT on ${fmtDate(iso)} added — revision is now spread across the days before it`);
   go('schedule');

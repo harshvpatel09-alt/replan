@@ -50,24 +50,61 @@ const StudySet = (() => {
       .filter(s => s.length > 30 && s.length < 320 && /[a-z]/.test(s) && / /.test(s));
   }
 
-  /* ---------------------------------------------------------------- sections */
+  /* ---------------------------------------------------------------- sections
+     Decks and PDFs arrive with [Slide n] / [Page n] markers from the extractor,
+     and those are far more reliable than guessing. Previously they were skipped
+     and headings were inferred, which went badly wrong on real decks: a short
+     bullet like "Requires oxygen" looked exactly like a title, so it became the
+     heading for nine sections while the actual slide titles were swallowed as
+     body text. A 41-slide deck collapsed into about seven junk groups. */
+  const SLIDE_MARK = /^\[(?:Page|Slide)\s+(\d+)\]$/i;
+  const BULLET = /^[-*•‣◦·]/;
+
   function sections(text){
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.some(l => SLIDE_MARK.test(l))) return slideSections(lines);
+
     const out = [];
     let cur = { heading: 'General', lines: [] };
-    for (let l of text.split('\n')) {
-      l = l.trim();
-      if (!l) continue;
-      if (/^\[(?:Page|Slide)\s+\d+\]$/i.test(l)) continue;      // positional marker
+    for (const l of lines) {
       const looksLikeHeading =
         (/^(?:chapter|unit|section|lesson|part|topic|module)\b/i.test(l) && l.length < 70) ||
-        (/^[A-Z0-9]/.test(l) && !/[.!?,]$/.test(l) && l.split(' ').length <= 8 && l.length <= 60 && !/\b(is|are|was|were|has|have)\b/i.test(l));
+        // a title may well contain a verb — "Mitochondria are the powerhouse" is
+        // a slide title, so excluding is/are/has threw away real headings
+        (/^[A-Z0-9]/.test(l) && !BULLET.test(l) && !/[.!?,;]$/.test(l)
+         && l.split(' ').length <= 10 && l.length <= 70);
       if (looksLikeHeading) {
         if (cur.lines.length) out.push(cur);
         cur = { heading: strip(l), lines: [] };
       } else cur.lines.push(l);
     }
     if (cur.lines.length) out.push(cur);
-    return out.length ? out : [{ heading: 'General', lines: text.split('\n').map(l => l.trim()).filter(Boolean) }];
+    return out.length ? out : [{ heading: 'General', lines }];
+  }
+
+  function slideSections(lines){
+    const raw = [];
+    let cur = null;
+    for (const l of lines) {
+      if (SLIDE_MARK.test(l)) { if (cur) raw.push(cur); cur = { heading: '', lines: [] }; continue; }
+      if (!cur) cur = { heading: '', lines: [] };
+      // the first ordinary line after the marker is the slide title
+      if (!cur.heading && !BULLET.test(l) && l.length <= 90) { cur.heading = strip(l); continue; }
+      cur.lines.push(l);
+    }
+    if (cur) raw.push(cur);
+
+    // "Osmosis" and "Osmosis continued" are one topic, not two
+    const key = s => lower(s).replace(/\b(?:cont(?:inued|d)?|part\s*\d+|\(\s*\d+\s*\))\b/g, '')
+                             .replace(/[^a-z0-9]+/g, ' ').trim();
+    const merged = [];
+    raw.forEach(s => {
+      const prev = merged[merged.length - 1];
+      if (prev && s.heading && key(prev.heading) === key(s.heading)) { prev.lines.push(...s.lines); return; }
+      if (prev && !s.heading) { prev.lines.push(...s.lines); return; }
+      merged.push({ heading: s.heading || 'General', lines: s.lines.slice() });
+    });
+    return merged.filter(s => s.heading !== 'General' || s.lines.length);
   }
 
   /* ------------------------------------------------------------- definitions
@@ -284,7 +321,12 @@ const StudySet = (() => {
     return secs.map(sec => {
       const points = [];
       sec.lines.forEach(l => sentences(l).forEach(s => { if (points.length < LIMITS.notePoints) points.push(s); }));
-      if (!points.length) sec.lines.filter(l => l.length > 25).slice(0, LIMITS.notePoints).forEach(l => points.push(clean(l)));
+      // slide bullets are short by nature; dropping everything under 25 characters
+      // left most decks with almost no notes at all
+      if (points.length < LIMITS.notePoints)
+        sec.lines.filter(l => l.length > 10 && !points.includes(clean(l)))
+                 .slice(0, LIMITS.notePoints - points.length)
+                 .forEach(l => points.push(clean(l).replace(BULLET, '').trim()));
       return { heading: sec.heading, points };
     }).filter(n => n.points.length);
   }
