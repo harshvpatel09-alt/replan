@@ -7,3 +7,6 @@
 
 # logs and scratch
 *.log
+
+# parsed College Board question bank, kept out of version control
+assets/sat-bank-full.json

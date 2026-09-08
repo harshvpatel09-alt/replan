@@ -357,32 +357,6 @@ const SAT_BANK = [
 },
 
 /* ---------------------------------------------------------------- Free response */
-{
-  id:'frq-hist-1', section:'Reading & Writing', domain:'Information and Ideas', topic:'Short answer — history',
-  difficulty:'Medium', type:'frq',
-  stem:'Briefly describe ONE specific effect of railroad expansion on the United States economy between 1865 and 1900, and explain how that effect came about.',
-  rubric:[
-    'Identifies one specific economic effect rather than a vague generality.',
-    'Ties the effect directly to railroad expansion rather than to industrialisation at large.',
-    'Explains the mechanism — how the railroads produced that effect.',
-    'Stays within the 1865–1900 window.'
-  ],
-  sample:'Railroad expansion created genuinely national markets for agricultural goods. Before the rail network reached deep into the Great Plains, midwestern farmers could sell only within wagon distance, because overland freight costs exceeded the value of bulk grain over any real distance. Rail freight cut the cost per ton-mile sharply, so wheat grown in Kansas could be shipped to Chicago elevators and on to eastern cities while still selling profitably. That access pulled more land into commercial cultivation and tied local crop prices to national rather than local demand.',
-  why:'Strong responses name a concrete effect and trace the causal chain. Answers that simply assert that railroads "helped the economy grow" describe a result without the mechanism, which is what the second half of the prompt asks for.'
-},
-{
-  id:'frq-math-1', section:'Math', domain:'Advanced Math', topic:'Justification — quadratics',
-  difficulty:'Hard', type:'frq',
-  stem:'A function is defined by f(x) = x² − 6x + 5. Determine the minimum value of f and justify your answer algebraically, without appealing to a graph.',
-  rubric:[
-    'Rewrites the function in vertex form, or uses x = −b/(2a) to locate the vertex.',
-    'Shows the algebra rather than stating the vertex outright.',
-    'States why this is a minimum and not a maximum.',
-    'Gives the minimum value, not just the x-value where it occurs.'
-  ],
-  sample:'Complete the square. f(x) = x² − 6x + 5 = (x² − 6x + 9) − 9 + 5 = (x − 3)² − 4. For every real x the term (x − 3)² is greater than or equal to 0, and it equals 0 only when x = 3. Therefore f(x) is greater than or equal to −4 for all x, with equality at x = 3. Because the coefficient of x² is positive the parabola opens upward, so this stationary value is a minimum rather than a maximum. The minimum value of f is −4.',
-  why:'The common lapse is answering 3 — that is where the minimum occurs, not the minimum itself. The prompt also asks for justification, so a bare answer earns little even when correct.'
-}
 
 ];
 
