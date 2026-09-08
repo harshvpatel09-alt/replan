@@ -18,15 +18,15 @@
    argument, so it is also the colour of every call to action.
    ============================================================ */
 :root{
-  --ink:#131A36;          /* the ground: deep indigo, never white */
-  --ink-well:#0C1128;     /* recessed panels */
-  --ink-line:#28325C;     /* the timetable ruling */
-  --text:#C9D2EA;
-  --muted:#8B96B8;
-  --done:#34D07F;
-  --planned:#4A7DFF;
-  --moved:#FFC24B;
-  --exam:#C86BFF;
+  --ink:#041C3F;          /* the ground: deep indigo, never white */
+  --ink-well:#020F26;     /* recessed panels */
+  --ink-line:#12305C;     /* the timetable ruling */
+  --text:#C6D6EE;
+  --muted:#8199BE;
+  --done:#05AE6B;
+  --planned:#1079FC;
+  --moved:#FDC844;
+  --exam:#6E51FC;         /* the violet tile in the logo */
   --col:7;                /* the week */
   --gut:clamp(20px,5vw,64px);
   --maxw:1180px;
@@ -56,7 +56,7 @@ a{color:inherit}
 .ruled>*{position:relative;z-index:1}
 
 /* ---- masthead ---- */
-.masthead{position:sticky;top:0;z-index:50;background:rgba(19,26,54,.82);backdrop-filter:blur(12px);border-bottom:1px solid var(--ink-line)}
+.masthead{position:sticky;top:0;z-index:50;background:rgba(4,28,63,.84);backdrop-filter:blur(12px);border-bottom:1px solid var(--ink-line)}
 .masthead .wrap{display:flex;align-items:center;gap:clamp(16px,3vw,40px);height:68px}
 .brand{display:flex;align-items:center;gap:10px;font-family:"Bricolage Grotesque",sans-serif;font-weight:800;font-size:1.15rem;letter-spacing:-.03em;text-decoration:none}
 /* The mark is a full-colour app icon on a dark navy squircle, so on this
